@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
-Samurai Scroll Portal — Render-Compatible CTF Version (fixed)
+Samurai Scroll Portal — Render-friendly (fixed)
 
-- UI is unchanged.
-- The ALLOW_EXTERNAL_ENTITIES flag is used correctly when constructing the lxml parser.
-- Default behavior is safe-for-hosting (no remote DTD/network fetch).
-- Flip ALLOW_EXTERNAL_ENTITIES = True only on local test machines for CTF purposes.
+- UI unchanged.
+- Toggle XXE behavior with the environment variable:
+    ALLOW_EXTERNAL_ENTITIES=true  (only for local/offline CTF testing)
+  Default is False (safe for Render).
+- No runtime filesystem writes.
 """
 
+import os
+import secrets
 from flask import Flask, request, render_template_string, url_for
-import os, secrets
 
+# lxml import with clear error if missing
 try:
-    from lxml import etree   # requires: pip3 install lxml
+    from lxml import etree
 except Exception as e:
     raise RuntimeError("lxml is required. Install with: pip install lxml") from e
 
@@ -21,13 +24,12 @@ app.secret_key = secrets.token_hex(16)
 
 BG_IMG = "https://japanesesword.net/cdn/shop/articles/samurai_silhouette_1024x576.jpg?v=1745390010"
 REMOTE_AUDIO = "https://www.mobiles24.co/metapreview.php?id=27018&cat=3&h=580887"
-USE_LOCAL_AUDIO = False  # set True and place static/dojo.mp3 for reliable local playback
+USE_LOCAL_AUDIO = False  # set True and place static/dojo.mp3 for local playback
 
-# SECURITY: Keep this False on public hosts (Render). Set True only on local/offline CTF testing.
-ALLOW_EXTERNAL_ENTITIES = False
+# Control the XXE behavior via environment variable (default: disabled)
+ALLOW_EXTERNAL_ENTITIES = os.environ.get("ALLOW_EXTERNAL_ENTITIES", "false").lower() in ("1", "true", "yes")
 
-TEMPLATE = '''
-<!doctype html>
+TEMPLATE = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -158,46 +160,52 @@ TEMPLATE = '''
   </script>
 </body>
 </html>
-'''
+"""
 
-@app.route('/', methods=['GET','POST'])
+@app.route("/", methods=["GET", "POST"])
 def portal():
     xml_preview = None
     secret_dump = None
-    if request.method == 'POST':
-        f = request.files.get('scroll')
+
+    if request.method == "POST":
+        f = request.files.get("scroll")
         if f:
             data = f.read()
-            # safe preview of uploaded XML (first 2000 chars)
+            # safe preview (first 2000 chars)
             try:
-                xml_preview = data.decode(errors='replace')[:2000]
+                xml_preview = data.decode(errors="replace")[:2000]
             except Exception:
-                xml_preview = '<binary data>'
+                xml_preview = "<binary data>"
 
-            # Build parser consistent with ALLOW_EXTERNAL_ENTITIES
+            # Build parser according to ALLOW_EXTERNAL_ENTITIES
             try:
                 parser = etree.XMLParser(
                     load_dtd=True,
                     resolve_entities=ALLOW_EXTERNAL_ENTITIES,
-                    no_network=not ALLOW_EXTERNAL_ENTITIES
+                    no_network=not ALLOW_EXTERNAL_ENTITIES,
                 )
                 root = etree.fromstring(data, parser=parser)
-                name = root.findtext('name') or ''
-                rank = root.findtext('rank') or ''
-                quote = root.findtext('quote') or root.findtext('message') or ''
+                name = root.findtext("name") or ""
+                rank = root.findtext("rank") or ""
+                quote = root.findtext("quote") or root.findtext("message") or ""
                 parts = []
-                if name: parts.append(f"Name: {name}")
-                if rank: parts.append(f"Rank: {rank}")
-                if quote: parts.append(f"Scroll: {quote}")
+                if name:
+                    parts.append(f"Name: {name}")
+                if rank:
+                    parts.append(f"Rank: {rank}")
+                if quote:
+                    parts.append(f"Scroll: {quote}")
                 secret_dump = "\\n".join(parts) if parts else None
             except Exception as e:
                 secret_dump = None
-                xml_preview = (xml_preview or '') + "\\n\\n(The portal could not fully bind the scroll.)\\n(" + str(e) + ")"
+                xml_preview = (xml_preview or "") + "\\n\\n(The portal could not fully bind the scroll.)\\n(" + str(e) + ")"
 
-    audio_src = url_for('static', filename='dojo.mp3') if USE_LOCAL_AUDIO else REMOTE_AUDIO
-    return render_template_string(TEMPLATE, bg_img=BG_IMG, audio_src=audio_src,
-                                  xml_preview=xml_preview, secret_dump=secret_dump)
+    audio_src = url_for("static", filename="dojo.mp3") if USE_LOCAL_AUDIO else REMOTE_AUDIO
+    return render_template_string(
+        TEMPLATE, bg_img=BG_IMG, audio_src=audio_src, xml_preview=xml_preview, secret_dump=secret_dump
+    )
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 1337))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # For Render: use gunicorn via Procfile; running with app.run is for local dev only
+    app.run(host="0.0.0.0", port=port, debug=False)
