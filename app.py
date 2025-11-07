@@ -1,31 +1,33 @@
 #!/usr/bin/env python3
 """
-Samurai Scroll Portal — Render-Compatible CTF Version
-----------------------------------------------------
-✅ Keeps XXE vulnerability (for CTF)
-✅ Keeps full HTML/CSS/JS UI intact
-✅ No filesystem writes (Render safe)
-⚠️ Do NOT use on public servers other than CTF sandboxes
+Samurai Scroll Portal — Render-Compatible CTF Version (fixed)
+
+- UI is unchanged.
+- The ALLOW_EXTERNAL_ENTITIES flag is used correctly when constructing the lxml parser.
+- Default behavior is safe-for-hosting (no remote DTD/network fetch).
+- Flip ALLOW_EXTERNAL_ENTITIES = True only on local test machines for CTF purposes.
 """
 
 from flask import Flask, request, render_template_string, url_for
 import os, secrets
-from lxml import etree
+
+try:
+    from lxml import etree   # requires: pip3 install lxml
+except Exception as e:
+    raise RuntimeError("lxml is required. Install with: pip install lxml") from e
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
 
-# --- UI Config ---
 BG_IMG = "https://japanesesword.net/cdn/shop/articles/samurai_silhouette_1024x576.jpg?v=1745390010"
 REMOTE_AUDIO = "https://www.mobiles24.co/metapreview.php?id=27018&cat=3&h=580887"
-USE_LOCAL_AUDIO = False  # leave False for Render (no static writes)
+USE_LOCAL_AUDIO = False  # set True and place static/dojo.mp3 for reliable local playback
 
-# === Keep XXE enabled for CTF ===
-ALLOW_EXTERNAL_ENTITIES = True  # ← this keeps the CTF behavior intact
-# Render blocks network DTD fetches, but entity resolution still works locally
+# SECURITY: Keep this False on public hosts (Render). Set True only on local/offline CTF testing.
+ALLOW_EXTERNAL_ENTITIES = False
 
-# === HTML Template (unchanged UI) ===
-TEMPLATE = '''<!doctype html>
+TEMPLATE = '''
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -128,6 +130,7 @@ TEMPLATE = '''<!doctype html>
     const veil = document.getElementById('veil');
     let hasPlayed = false;
 
+    // Play audio on first click anywhere (guaranteed user gesture)
     veil.addEventListener('click', () => {
       if (!hasPlayed) {
         hasPlayed = true;
@@ -135,6 +138,7 @@ TEMPLATE = '''<!doctype html>
         audio.muted = false;
         audio.play().then(() => {
           muteBtn.style.display = 'block';
+          // smooth fade in
           let v = 0;
           const fade = setInterval(()=>{
             if(v<1){ v+=0.05; audio.volume=v; } else clearInterval(fade);
@@ -143,6 +147,7 @@ TEMPLATE = '''<!doctype html>
       }
     });
 
+    // Mute/unmute toggle
     muteBtn.addEventListener('click', () => {
       if(audio.muted || audio.volume===0){
         audio.muted=false; audio.volume=1; muteBtn.textContent='🔊';
@@ -152,9 +157,9 @@ TEMPLATE = '''<!doctype html>
     });
   </script>
 </body>
-</html>'''
+</html>
+'''
 
-# === Flask Route ===
 @app.route('/', methods=['GET','POST'])
 def portal():
     xml_preview = None
@@ -163,13 +168,19 @@ def portal():
         f = request.files.get('scroll')
         if f:
             data = f.read()
+            # safe preview of uploaded XML (first 2000 chars)
             try:
                 xml_preview = data.decode(errors='replace')[:2000]
             except Exception:
                 xml_preview = '<binary data>'
 
+            # Build parser consistent with ALLOW_EXTERNAL_ENTITIES
             try:
-                parser = etree.XMLParser(load_dtd=True, resolve_entities=True, no_network=False)
+                parser = etree.XMLParser(
+                    load_dtd=True,
+                    resolve_entities=ALLOW_EXTERNAL_ENTITIES,
+                    no_network=not ALLOW_EXTERNAL_ENTITIES
+                )
                 root = etree.fromstring(data, parser=parser)
                 name = root.findtext('name') or ''
                 rank = root.findtext('rank') or ''
@@ -180,7 +191,8 @@ def portal():
                 if quote: parts.append(f"Scroll: {quote}")
                 secret_dump = "\\n".join(parts) if parts else None
             except Exception as e:
-                xml_preview = (xml_preview or '') + f"\\n\\n(The portal could not fully bind the scroll.)\\n({e})"
+                secret_dump = None
+                xml_preview = (xml_preview or '') + "\\n\\n(The portal could not fully bind the scroll.)\\n(" + str(e) + ")"
 
     audio_src = url_for('static', filename='dojo.mp3') if USE_LOCAL_AUDIO else REMOTE_AUDIO
     return render_template_string(TEMPLATE, bg_img=BG_IMG, audio_src=audio_src,
